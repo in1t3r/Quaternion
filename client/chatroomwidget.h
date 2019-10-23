@@ -54,26 +54,33 @@ class ChatRoomWidget: public QWidget
         QStringList findCompletionMatches(const QString& pattern) const;
 
     signals:
-        void joinCommandEntered(const QString& roomAlias);
+        void joinRequested(const QString& roomAlias);
+        void resourceRequested(const QString& idOrUri,
+                               const QString& action = {});
         void showStatusMessage(const QString& message, int timeout = 0) const;
         void readMarkerMoved();
         void readMarkerCandidateMoved();
+        void pageUpPressed();
+        void pageDownPressed();
+        void openExternally(int currentIndex);
+        void showDetails(int currentIndex);
 
     public slots:
         void setRoom(QuaternionRoom* room);
-        void updateHeader();
 
-        void insertMention(QMatrixClient::User* user);
+        void insertMention(Quotient::User* user);
         void focusInput();
 
         void typingChanged();
         void onMessageShownChanged(const QString& eventId, bool shown);
         void markShownAsRead();
         void saveFileAs(QString eventId);
-
-    protected:
-        void timerEvent(QTimerEvent* event) override;
-        void resizeEvent(QResizeEvent*) override;
+        void quote(const QString& htmlText);
+        void showMenu(int index, const QString& hoveredLink, bool showingDetails);
+        void fileDrop(const QString& url);
+        void textDrop(const QString& text);
+        void setGlobalSelectionBuffer(QString text);
+        Qt::KeyboardModifiers getModifierKeys();
 
     private slots:
         void sendInput();
@@ -92,22 +99,27 @@ class ChatRoomWidget: public QWidget
         using timelineWidget_t = QQuickWidget;
 #endif
         // Controls
-        QLabel* m_roomAvatar;
-        QLabel* m_topicLabel;
         timelineWidget_t* m_timelineWidget;
         QLabel* m_hudCaption; //< For typing and completion notifications
         QAction* m_attachAction;
         ChatEdit* m_chatEdit;
 
         // Supplementary/cache data members
-        using timeline_index_t = QMatrixClient::TimelineItem::index_t;
+        using timeline_index_t = Quotient::TimelineItem::index_t;
         QVector<timeline_index_t> indicesOnScreen;
         timeline_index_t indexToMaybeRead;
         QBasicTimer maybeReadTimer;
         bool readMarkerOnScreen;
         QMap<QuaternionRoom*, QVector<QTextDocument*>> roomHistories;
         QString attachedFileName;
+        QString selectedText;
 
         void reStartShownTimer();
         QString doSendInput();
+
+        void timerEvent(QTimerEvent* qte) override;
+        void resizeEvent(QResizeEvent*) override;
+        void keyPressEvent(QKeyEvent*) override;
+
+        int maximumChatEditHeight() const;
 };

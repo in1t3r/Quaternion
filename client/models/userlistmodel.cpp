@@ -22,6 +22,8 @@
 #include <QElapsedTimer>
 #include <QtCore/QDebug>
 #include <QtGui/QPixmap>
+#include <QtGui/QPalette>
+#include <QtWidgets/QApplication>
 
 #include <connection.h>
 #include <room.h>
@@ -35,12 +37,12 @@ UserListModel::UserListModel(QObject* parent)
 
 UserListModel::~UserListModel() = default;
 
-void UserListModel::setRoom(QMatrixClient::Room* room)
+void UserListModel::setRoom(Quotient::Room* room)
 {
     if (m_currentRoom == room)
         return;
 
-    using namespace QMatrixClient;
+    using namespace Quotient;
     beginResetModel();
     if( m_currentRoom )
     {
@@ -72,7 +74,7 @@ void UserListModel::setRoom(QMatrixClient::Room* room)
     endResetModel();
 }
 
-QMatrixClient::User* UserListModel::userAt(QModelIndex index)
+Quotient::User* UserListModel::userAt(QModelIndex index)
 {
     if (index.row() < 0 || index.row() >= m_users.size())
         return nullptr;
@@ -102,10 +104,20 @@ QVariant UserListModel::data(const QModelIndex& index, int role) const
     if (role == Qt::ToolTipRole)
     {
         auto tooltip = QStringLiteral("<b>%1</b><br>%2")
-                .arg(user->name(m_currentRoom), user->id());
+                .arg(user->name(m_currentRoom).toHtmlEscaped(), user->id());
         if (!user->bridged().isEmpty())
             tooltip += "<br>" + tr("Bridged from: %1").arg(user->bridged());
         return tooltip;
+    }
+
+    if (role == Qt::ForegroundRole)
+    {
+        // FIXME: boilerplate with TimelineItem.qml:57
+        return QColor::fromHslF(user->hueF(),
+                                1 - QApplication::palette().color(QPalette::Window).saturationF(),
+                                -0.7 * QApplication::palette().color(QPalette::Window).lightnessF() + 0.9,
+                                QApplication::palette().color(QPalette::ButtonText).alphaF()
+                                );
     }
 
     return QVariant();
@@ -119,31 +131,42 @@ int UserListModel::rowCount(const QModelIndex& parent) const
     return m_users.count();
 }
 
-void UserListModel::userAdded(QMatrixClient::User* user)
+void UserListModel::userAdded(Quotient::User* user)
 {
     auto pos = findUserPos(user);
+    if (pos != m_users.size() && m_users[pos] == user)
+    {
+        qWarning() << "Trying to add the user" << user->id()
+                   << "but it's already in the user list";
+        return;
+    }
     beginInsertRows(QModelIndex(), pos, pos);
     m_users.insert(pos, user);
     endInsertRows();
-    connect( user, &QMatrixClient::User::avatarChanged, this, &UserListModel::avatarChanged );
+    connect( user, &Quotient::User::avatarChanged, this, &UserListModel::avatarChanged );
 }
 
-void UserListModel::userRemoved(QMatrixClient::User* user)
+void UserListModel::userRemoved(Quotient::User* user)
 {
     auto pos = findUserPos(user);
-    if (pos != m_users.size())
+    if (pos == m_users.size())
     {
-        beginRemoveRows(QModelIndex(), pos, pos);
-        m_users.removeAt(pos);
-        endRemoveRows();
-        user->disconnect(this);
-    } else
-        qWarning() << "Trying to remove a room member not in the user list";
-}
+        qWarning() << "Trying to remove a room member not in the user list:"
+                   << user->id();
+        return;
+    }
 
+    beginRemoveRows(QModelIndex(), pos, pos);
+    m_users.removeAt(pos);
+    endRemoveRows();
+    user->disconnect(this);
+}
 
 void UserListModel::filter(const QString& filterString)
 {
+    if (m_currentRoom == nullptr)
+        return;
+
     QElapsedTimer et; et.start();
 
     beginResetModel();
@@ -161,7 +184,7 @@ void UserListModel::filter(const QString& filterString)
                 << m_currentRoom->displayName() << "took" << et;
 }
 
-void UserListModel::refresh(QMatrixClient::User* user, QVector<int> roles)
+void UserListModel::refresh(Quotient::User* user, QVector<int> roles)
 {
     auto pos = findUserPos(user);
     if ( pos != m_users.size() )
@@ -170,8 +193,8 @@ void UserListModel::refresh(QMatrixClient::User* user, QVector<int> roles)
         qWarning() << "Trying to access a room member not in the user list";
 }
 
-void UserListModel::avatarChanged(QMatrixClient::User* user,
-                                  const QMatrixClient::Room* context)
+void UserListModel::avatarChanged(Quotient::User* user,
+                                  const Quotient::Room* context)
 {
     if (context == m_currentRoom)
         refresh(user, {Qt::DecorationRole});

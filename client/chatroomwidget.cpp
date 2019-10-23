@@ -25,6 +25,9 @@
 #include <QtWidgets/QAction>
 #include <QtWidgets/QFileDialog>
 #include <QtWidgets/QApplication>
+#include <QtWidgets/QMenu>
+#include <QtGui/QClipboard>
+#include <QtGui/QDesktopServices>
 
 #include <QtQml/QQmlContext>
 #include <QtQml/QQmlEngine>
@@ -35,6 +38,7 @@
 #endif
 #include <QtCore/QRegularExpression>
 #include <QtCore/QStringBuilder>
+#include <QtCore/QLocale>
 
 #include <events/roommessageevent.h>
 #include <csapi/message_pagination.h>
@@ -52,34 +56,22 @@ ChatRoomWidget::ChatRoomWidget(QWidget* parent)
     : QWidget(parent)
     , m_messageModel(new MessageEventModel(this))
     , m_currentRoom(nullptr)
+    , indexToMaybeRead(-1)
     , readMarkerOnScreen(false)
 {
     {
-        using namespace QMatrixClient;
-        qmlRegisterUncreatableType<QuaternionRoom>("QMatrixClient", 1, 0, "Room",
-            "Room objects can only be created by libqmatrixclient");
-        qmlRegisterUncreatableType<User>("QMatrixClient", 1, 0, "User",
-            "User objects can only be created by libqmatrixclient");
+        using namespace Quotient;
+        qmlRegisterUncreatableType<QuaternionRoom>("Quotient", 1, 0, "Room",
+            "Room objects can only be created by libQuotient");
+        qmlRegisterUncreatableType<User>("Quotient", 1, 0, "User",
+            "User objects can only be created by libQuotient");
         qmlRegisterType<GetRoomEventsJob>();
         qRegisterMetaType<GetRoomEventsJob*>("GetRoomEventsJob*");
-        qmlRegisterType<Settings>("QMatrixClient", 1, 0, "Settings");
-        qmlRegisterUncreatableType<RoomMessageEvent>("QMatrixClient", 1, 0,
+        qRegisterMetaType<User*>("User*");
+        qmlRegisterType<Settings>("Quotient", 1, 0, "Settings");
+        qmlRegisterUncreatableType<RoomMessageEvent>("Quotient", 1, 0,
             "RoomMessageEvent", "RoomMessageEvent is uncreatable");
     }
-
-    m_roomAvatar = new QLabel();
-    m_roomAvatar->setPixmap({});
-    m_roomAvatar->setFrameStyle(QFrame::Sunken);
-
-    m_topicLabel = new QLabel();
-    m_topicLabel->setTextFormat(Qt::RichText);
-    m_topicLabel->setWordWrap(true);
-    m_topicLabel->setTextInteractionFlags(Qt::TextBrowserInteraction
-                                          |Qt::TextSelectableByKeyboard);
-    m_topicLabel->setOpenExternalLinks(true);
-
-    auto topicSeparator = new QFrame();
-    topicSeparator->setFrameShape(QFrame::HLine);
 
     m_timelineWidget = new timelineWidget_t;
     qDebug() << "Rendering QML with"
@@ -95,12 +87,14 @@ ChatRoomWidget::ChatRoomWidget(QWidget* parent)
     m_timelineWidget->setResizeMode(timelineWidget_t::SizeRootObjectToView);
 
     m_imageProvider = new ImageProvider();
-    m_timelineWidget->engine()->addImageProvider("mtx", m_imageProvider);
+    m_timelineWidget->engine()
+            ->addImageProvider(QStringLiteral("mtx"), m_imageProvider);
 
-    QQmlContext* ctxt = m_timelineWidget->rootContext();
-    ctxt->setContextProperty("messageModel", m_messageModel);
-    ctxt->setContextProperty("controller", this);
-    ctxt->setContextProperty("debug", QVariant(false));
+    auto* ctxt = m_timelineWidget->rootContext();
+    ctxt->setContextProperty(QStringLiteral("messageModel"), m_messageModel);
+    ctxt->setContextProperty(QStringLiteral("controller"), this);
+    ctxt->setContextProperty(QStringLiteral("debug"), QVariant(false));
+    ctxt->setContextProperty(QStringLiteral("room"), nullptr);
 
     m_timelineWidget->setSource(QUrl("qrc:///qml/Timeline.qml"));
 
@@ -124,7 +118,7 @@ ChatRoomWidget::ChatRoomWidget(QWidget* parent)
         {
             m_chatEdit->setPlaceholderText(
                 tr("Add a message to the file or just push Enter"));
-            emit showStatusMessage(tr("Attaching ") + attachedFileName);
+            emit showStatusMessage(tr("Attaching %1").arg(attachedFileName));
         } else {
             m_attachAction->setChecked(false);
             m_chatEdit->setPlaceholderText(DefaultPlaceholderText);
@@ -136,8 +130,13 @@ ChatRoomWidget::ChatRoomWidget(QWidget* parent)
     m_chatEdit = new ChatEdit(this);
     m_chatEdit->setPlaceholderText(DefaultPlaceholderText);
     m_chatEdit->setAcceptRichText(false);
-    m_chatEdit->setMaximumHeight(parent->height() / 3);
+    m_chatEdit->setMaximumHeight(maximumChatEditHeight());
     connect( m_chatEdit, &KChatEdit::returnPressed, this, &ChatRoomWidget::sendInput );
+    connect(m_chatEdit, &KChatEdit::copyRequested, this, [=] {
+        QApplication::clipboard()->setText(
+            m_chatEdit->textCursor().hasSelection() ? m_chatEdit->textCursor().selectedText() : selectedText
+        );
+    });
     connect(m_chatEdit, &ChatEdit::proposedCompletion, this,
             [=](const QStringList& matches, int pos)
             {
@@ -148,14 +147,20 @@ ChatRoomWidget::ChatRoomWidget(QWidget* parent)
     connect(m_chatEdit, &ChatEdit::cancelledCompletion,
             this, &ChatRoomWidget::typingChanged);
 
-    auto layout = new QVBoxLayout();
     {
-        auto headerLayout = new QHBoxLayout;
-        headerLayout->addWidget(m_roomAvatar);
-        headerLayout->addWidget(m_topicLabel, 1);
-        layout->addLayout(headerLayout);
+        Quotient::Settings s;
+        QString styleSheet;
+        const auto fontFamily = s.value("UI/Fonts/timeline_family").toString();
+        if (!fontFamily.isEmpty())
+            styleSheet += "font-family: " + fontFamily + ";";
+        const auto fontPointSize = s.value("UI/Fonts/timeline_pointSize");
+        if (fontPointSize.toReal() > 0.0)
+            styleSheet += "font-size: " + fontPointSize.toString() + "pt;";
+        if (!styleSheet.isEmpty())
+            setStyleSheet(styleSheet);
     }
-    layout->addWidget(topicSeparator);
+
+    auto* layout = new QVBoxLayout();
     layout->addWidget(qmlContainer);
     layout->addWidget(m_hudCaption);
     {
@@ -170,7 +175,7 @@ ChatRoomWidget::ChatRoomWidget(QWidget* parent)
 void ChatRoomWidget::enableDebug()
 {
     QQmlContext* ctxt = m_timelineWidget->rootContext();
-    ctxt->setContextProperty("debug", true);
+    ctxt->setContextProperty(QStringLiteral("debug"), true);
 }
 
 void ChatRoomWidget::setRoom(QuaternionRoom* room)
@@ -196,11 +201,10 @@ void ChatRoomWidget::setRoom(QuaternionRoom* room)
     m_chatEdit->cancelCompletion();
 
     m_currentRoom = room;
-    m_timelineWidget->rootContext()->setContextProperty("room", room);
     m_attachAction->setEnabled(m_currentRoom != nullptr);
     if( m_currentRoom )
     {
-        using namespace QMatrixClient;
+        using namespace Quotient;
         m_imageProvider->setConnection(room->connection());
         m_chatEdit->setText( m_currentRoom->cachedInput() );
         m_chatEdit->setHistory(roomHistories.value(m_currentRoom));
@@ -208,12 +212,6 @@ void ChatRoomWidget::setRoom(QuaternionRoom* room)
         m_chatEdit->moveCursor(QTextCursor::End);
         connect( m_currentRoom, &Room::typingChanged,
                  this, &ChatRoomWidget::typingChanged );
-        connect( m_currentRoom, &Room::namesChanged,
-                 this, &ChatRoomWidget::updateHeader );
-        connect( m_currentRoom, &Room::topicChanged,
-                 this, &ChatRoomWidget::updateHeader );
-        connect( m_currentRoom, &Room::avatarChanged,
-                 this, &ChatRoomWidget::updateHeader );
         connect( m_currentRoom, &Room::readMarkerMoved, this, [this] {
             const auto rm = m_currentRoom->readMarker();
             readMarkerOnScreen =
@@ -234,7 +232,8 @@ void ChatRoomWidget::setRoom(QuaternionRoom* room)
         m_currentRoom->setDisplayed(true);
     } else
         m_imageProvider->setConnection(nullptr);
-    updateHeader();
+    m_timelineWidget->rootContext()
+            ->setContextProperty(QStringLiteral("room"), room);
     typingChanged();
     encryptionChanged();
 
@@ -253,27 +252,8 @@ void ChatRoomWidget::typingChanged()
     {
         typingNames << m_currentRoom->roomMembername(user);
     }
-    setHudCaption( tr("Currently typing: %1").arg(typingNames.join(", ")) );
-}
-
-void ChatRoomWidget::updateHeader()
-{
-    if (m_currentRoom)
-    {
-        auto topic = m_currentRoom->topic();
-        auto prettyTopic = topic.isEmpty() ?
-                tr("(no topic)") : m_currentRoom->prettyPrint(topic);
-        m_topicLabel->setText("<strong>" % m_currentRoom->displayName() %
-                              "</strong><br />" % prettyTopic);
-        auto avatarSize = m_topicLabel->heightForWidth(width());
-        m_roomAvatar->setPixmap(
-                QPixmap::fromImage(m_currentRoom->avatar(avatarSize)));
-    }
-    else
-    {
-        m_roomAvatar->clear();
-        m_topicLabel->clear();
-    }
+    setHudCaption( tr("Currently typing: %1")
+                   .arg(typingNames.join(QStringLiteral(", "))) );
 }
 
 void ChatRoomWidget::encryptionChanged()
@@ -283,8 +263,11 @@ void ChatRoomWidget::encryptionChanged()
         m_currentRoom
             ? m_currentRoom->usesEncryption()
                 ? tr("Sending encrypted messages is not supported yet")
-                : tr("Send a message (unencrypted) or enter a command...")
-                : DefaultPlaceholderText);
+                : tr("Send a message (over %1) or enter a command...",
+                     "%1 is the protocol used by the server (usually HTTPS)")
+                  .arg(m_currentRoom->connection()->homeserver()
+                       .scheme().toUpper())
+            : DefaultPlaceholderText);
 }
 
 void ChatRoomWidget::setHudCaption(QString newCaption)
@@ -292,7 +275,7 @@ void ChatRoomWidget::setHudCaption(QString newCaption)
     m_hudCaption->setText("<i>" + newCaption + "</i>");
 }
 
-void ChatRoomWidget::insertMention(QMatrixClient::User* user)
+void ChatRoomWidget::insertMention(Quotient::User* user)
 {
     m_chatEdit->insertMention(user->displayname(m_currentRoom));
 }
@@ -333,7 +316,8 @@ QString ChatRoomWidget::doSendInput()
     if (!attachedFileName.isEmpty())
     {
         Q_ASSERT(m_currentRoom != nullptr);
-        auto txnId = m_currentRoom->postFile(text,
+        auto txnId = m_currentRoom->postFile(text.isEmpty() ?
+                            QUrl(attachedFileName).fileName() : text,
                         QUrl::fromLocalFile(attachedFileName));
 
         attachedFileName.clear();
@@ -344,6 +328,41 @@ QString ChatRoomWidget::doSendInput()
 
     if ( text.isEmpty() )
         return tr("There's nothing to send");
+
+    static const auto ReFlags = QRegularExpression::DotMatchesEverythingOption;
+
+    static const QRegularExpression
+            CommandRe { QStringLiteral("^/([^ ]+)( +(.*))?\\s*$"), ReFlags },
+            RoomIdRE { QStringLiteral("^(#[-0-9a-z._=]+)|(!\\S+):\\S+$"), ReFlags },
+            UserIdRE { QStringLiteral("^@[-0-9a-zA-Z._=/]+:\\S+$"), ReFlags },
+            HtmlTagRE { QStringLiteral("<[^>]+>"), ReFlags };
+
+    // Process a command
+    const auto matches = CommandRe.match(text);
+    const auto command = matches.capturedRef(1);
+    const auto argString = matches.captured(3);
+
+    // Commands available without a current room
+    if (command == "join")
+    {
+        if (!argString.contains(RoomIdRE))
+            return tr("/join argument doesn't look like a room ID or alias");
+        emit joinRequested(argString);
+        return {};
+    }
+    if (command == "quit")
+    {
+        qApp->closeAllWindows();
+        return {};
+    }
+    // --- Add more roomless commands here
+    if (!m_currentRoom)
+    {
+        if (text.startsWith('/'))
+            return tr("There's no such /command outside of room.");
+
+        return tr("You should select a room to send messages.");
+    }
 
     if (!text.startsWith('/'))
     {
@@ -357,41 +376,8 @@ QString ChatRoomWidget::doSendInput()
         return {};
     }
 
-    static const auto ReFlags =
-            QRegularExpression::DotMatchesEverythingOption|
-            QRegularExpression::OptimizeOnFirstUsageOption;
-
-    static const QRegularExpression
-            CommandRe { "^/([^ ]+)( +(.*))?\\s*$", ReFlags },
-            RoomIdRE { "^[#!][-0-9a-z._=]+:\\S+$", ReFlags },
-            UserIdRE { "^@[-0-9a-z._=]+:\\S+$", ReFlags },
-            HtmlTagRE { "<[^>]+>", ReFlags };
-
-    // Process a command
-    const auto matches = CommandRe.match(text);
-    const auto command = matches.capturedRef(1);
-    const auto argString = matches.captured(3);
-
-    // Commands available without a current room
-    if (command == "join")
-    {
-        if (!argString.contains(RoomIdRE))
-            return tr("/join argument doesn't look like a room ID or alias");
-        emit joinCommandEntered(argString);
-        return {};
-    }
-    if (command == "quit")
-    {
-        qApp->closeAllWindows();
-        return {};
-    }
-    // --- Add more roomless commands here
-    if (!m_currentRoom)
-        return tr("There's no such /command outside of room."
-                  " Start with // to send this line literally");
-
     // Commands available only in the room context
-    using namespace QMatrixClient;
+    using namespace Quotient;
     if (command == "leave" || command == "part")
     {
         if (!argString.isEmpty())
@@ -488,7 +474,8 @@ QString ChatRoomWidget::doSendInput()
     }
     if (command == "shrug") // Peeked at Discord
     {
-        m_currentRoom->postPlainText("¯\\_(ツ)_/¯");
+        m_currentRoom->postPlainText((argString.isEmpty() ? "" : argString + " ") +
+                                     "¯\\_(ツ)_/¯");
         return {};
     }
     if (command == "topic")
@@ -509,7 +496,7 @@ QString ChatRoomWidget::doSendInput()
     if (command == "pm" || command == "msg")
     {
         const auto args = lazySplitRef(argString, ' ', 2);
-        if (args.front().isEmpty())
+        if (args.front().isEmpty() || (args.back().isEmpty() && command == "msg"))
             return tr("/%1 <memberId> <message>").arg(command.toString());
         if (RoomIdRE.match(args.front()).hasMatch() && command == "msg")
         {
@@ -523,8 +510,11 @@ QString ChatRoomWidget::doSendInput()
         }
         if (UserIdRE.match(args.front()).hasMatch())
         {
-            m_currentRoom->connection()->doInDirectChat(args.front(),
-                [msg=args.back()] (Room* dc) { dc->postPlainText(msg); });
+            if (args.back().isEmpty())
+                m_currentRoom->connection()->requestDirectChat(args.front());
+            else
+                m_currentRoom->connection()->doInDirectChat(args.front(),
+                    [msg=args.back()] (Room* dc) { dc->postPlainText(msg); });
             return {};
         }
 
@@ -656,6 +646,110 @@ void ChatRoomWidget::onMessageShownChanged(const QString& eventId, bool shown)
     }
 }
 
+void ChatRoomWidget::quote(const QString& htmlText)
+{
+    Quotient::SettingsGroup sg { QStringLiteral("UI") };
+    const auto type = sg.get<int>("quote_type");
+    const auto defaultStyle = QStringLiteral("> \\1\n");
+    const auto defaultRegex = QStringLiteral("(.+)(?:\n|$)");
+    auto style = sg.get<QString>("quote_style");
+    auto regex = sg.get<QString>("quote_regex");
+
+    if (style.isEmpty())
+        style = defaultStyle;
+    if (regex.isEmpty())
+        regex = defaultRegex;
+
+    QTextDocument document;
+    document.setHtml(htmlText);
+    QString sendString;
+
+    switch (type)
+    {
+        case 0:
+            sendString = document.toPlainText()
+                .replace(QRegularExpression(defaultRegex), defaultStyle);
+            break;
+        case 1:
+            sendString = document.toPlainText()
+                .replace(QRegularExpression(regex), style);
+            break;
+        case 2:
+            sendString = QLocale().quoteString(document.toPlainText()) + "\n";
+            break;
+    }
+
+    m_chatEdit->insertPlainText(sendString);
+}
+
+void ChatRoomWidget::showMenu(int index, const QString& hoveredLink,
+                              bool showingDetails)
+{
+    const auto modelIndex = m_messageModel->index(index, 0);
+    const auto eventId = modelIndex.data(MessageEventModel::EventIdRole).toString();
+
+    QMenu menu;
+    menu.addAction(QIcon::fromTheme("edit-delete"), tr("Redact"), [=] {
+        m_currentRoom->redactEvent(eventId);
+    });
+    if (!hoveredLink.isEmpty())
+    {
+        menu.addAction(tr("Copy link to clipboard"), [=] {
+            QApplication::clipboard()->setText(hoveredLink);
+        });
+    }
+    menu.addAction(QIcon::fromTheme("link"), tr("Copy permalink to clipboard"), [=] {
+        QApplication::clipboard()->setText("https://matrix.to/#/" +
+            m_currentRoom->id() + "/" + QUrl::toPercentEncoding(eventId));
+    });
+    menu.addAction(QIcon::fromTheme("format-text-blockquote"),
+                   tr("Quote", "a verb (do quote), not a noun (a quote)"), [=] {
+        emit quote(modelIndex.data().toString());
+    });
+    auto a = menu.addAction(QIcon::fromTheme("view-list-details"), tr("Show details"), [=] {
+        emit showDetails(index);
+    });
+    a->setCheckable(true);
+    a->setChecked(showingDetails);
+
+    const auto eventType = modelIndex.data(MessageEventModel::EventTypeRole).toString();
+    if (eventType == "image" || eventType == "file")
+    {
+        const auto progressInfo = modelIndex.data(MessageEventModel::SpecialMarksRole)
+            .value<Quotient::FileTransferInfo>();
+        const bool downloaded = !progressInfo.isUpload && progressInfo.completed();
+
+        menu.addSeparator();
+        menu.addAction(QIcon::fromTheme("document-open"), tr("Open externally"), [=] {
+            emit openExternally(index);
+        });
+        menu.addAction(QIcon::fromTheme("folder-open"), tr("Open Folder"), [=] {
+            if (!downloaded)
+                m_currentRoom->downloadFile(eventId);
+
+            QDesktopServices::openUrl(progressInfo.localDir);
+        });
+        if (!downloaded)
+        {
+            menu.addAction(QIcon::fromTheme("edit-download"), tr("Download"), [=] {
+                m_currentRoom->downloadFile(eventId);
+            });
+        }
+        menu.addAction(QIcon::fromTheme("document-save-as"), tr("Save file as..."), [=] {
+            saveFileAs(eventId);
+        });
+    }
+    menu.exec(QCursor::pos());
+}
+
+void ChatRoomWidget::setGlobalSelectionBuffer(QString text)
+{
+    if (QApplication::clipboard()->supportsSelection())
+        QApplication::clipboard()->setText(text, QClipboard::Selection);
+
+    selectedText = text;
+}
+
 void ChatRoomWidget::reStartShownTimer()
 {
     if (!readMarkerOnScreen || indicesOnScreen.empty() ||
@@ -688,7 +782,26 @@ void ChatRoomWidget::timerEvent(QTimerEvent* qte)
 
 void ChatRoomWidget::resizeEvent(QResizeEvent*)
 {
-    m_chatEdit->setMaximumHeight(height() / 3);
+    m_chatEdit->setMaximumHeight(maximumChatEditHeight());
+}
+
+void ChatRoomWidget::keyPressEvent(QKeyEvent* event)
+{
+    // This only handles keypresses not handled by ChatEdit; in particular,
+    // this means that PageUp/PageDown below are actually Ctrl-PageUp/PageDown
+    switch(event->key()) {
+        case Qt::Key_PageUp:
+            emit pageUpPressed();
+            break;
+        case Qt::Key_PageDown:
+            emit pageDownPressed();
+            break;
+    }
+}
+
+int ChatRoomWidget::maximumChatEditHeight() const
+{
+    return maximumHeight() / 3;
 }
 
 void ChatRoomWidget::markShownAsRead()
@@ -709,4 +822,23 @@ bool ChatRoomWidget::pendingMarkRead() const
 
     const auto rm = m_currentRoom->readMarker();
     return rm != m_currentRoom->timelineEdge() && rm->index() < indexToMaybeRead;
+}
+
+void ChatRoomWidget::fileDrop(const QString& url)
+{
+    attachedFileName = QUrl(url).path();
+    m_attachAction->setChecked(true);
+    m_chatEdit->setPlaceholderText(
+        tr("Add a message to the file or just push Enter"));
+    emit showStatusMessage(tr("Attaching %1").arg(attachedFileName));
+}
+
+void ChatRoomWidget::textDrop(const QString& text)
+{
+    m_chatEdit->setText(text);
+}
+
+Qt::KeyboardModifiers ChatRoomWidget::getModifierKeys()
+{
+    return QGuiApplication::keyboardModifiers();
 }

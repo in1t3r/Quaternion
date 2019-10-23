@@ -6,11 +6,11 @@ Label {
 
     font.italic: true
     textFormat: Text.PlainText
-    MouseArea
+    TimelineMouseArea
     {
         anchors.fill: parent
         cursorShape: Qt.PointingHandCursor
         acceptedButtons: Qt.LeftButton
-        onClicked: parent.clicked
+        onClicked: parent.clicked()
     }
 }

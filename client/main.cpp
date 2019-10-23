@@ -31,13 +31,38 @@
 
 int main( int argc, char* argv[] )
 {
-    QApplication app(argc, argv);
-    QApplication::setOrganizationName("QMatrixClient");
-    QApplication::setApplicationName("quaternion");
-    QApplication::setApplicationDisplayName("Quaternion");
-    QApplication::setApplicationVersion("0.0.9.4-git");
+#if (QT_VERSION >= QT_VERSION_CHECK(5, 10, 0))
+    QApplication::setAttribute(Qt::AA_DisableWindowContextHelpButton);
+#endif
 
-    QMatrixClient::Settings::setLegacyNames("Quaternion", "quaternion");
+    QApplication app(argc, argv);
+    QApplication::setOrganizationName(QStringLiteral("Quotient"));
+    QApplication::setApplicationName(QStringLiteral("quaternion"));
+    QApplication::setApplicationDisplayName(QStringLiteral("Quaternion"));
+    QApplication::setApplicationVersion(QStringLiteral("0.0.9.4+git"));
+
+    using Quotient::Settings;
+    Settings::setLegacyNames(QStringLiteral("QMatrixClient"),
+                             QStringLiteral("quaternion"));
+
+    {
+        Settings s;
+        auto font = QApplication::font();
+        if (const auto fontFamily = s.value("UI/Fonts/family");
+            !fontFamily.toString().isEmpty())
+        {
+            font.setFamily(fontFamily.toString());
+        }
+
+        if (const auto fontPointSize = s.value("UI/Fonts/pointSize");
+            fontPointSize.toReal() > 0)
+        {
+            font.setPointSizeF(fontPointSize.toReal());
+        }
+
+        qDebug() << "Using application font:" << font.toString();
+        QApplication::setFont(font);
+    }
 
     // We should not need to do the following, as quitOnLastWindowClosed is
     // set to "true" by default; might be a bug, see
@@ -54,13 +79,16 @@ int main( int argc, char* argv[] )
     parser.addVersionOption();
 
     QList<QCommandLineOption> options;
-    QCommandLineOption locale { "locale",
+    QCommandLineOption locale { QStringLiteral("locale"),
         QApplication::translate("main", "Override locale"),
         QApplication::translate("main", "locale") };
     options.append(locale);
-    QCommandLineOption debug { "debug",
+    QCommandLineOption hideMainWindow { QStringLiteral("hide-mainwindow"),
+        QApplication::translate("main", "Hide main window on startup") };
+    options.append(hideMainWindow);
+    QCommandLineOption debug { QStringLiteral("debug"),
         QApplication::translate("main", "Display debug information") };
-    debug.setHidden(true); // FIXME, #415; also, setHidden is obsolete in Qt 5.11
+    debug.setFlags(QCommandLineOption::HiddenFromHelp); // FIXME, #415
     options.append(debug);
     // Add more command line options before this line
 
@@ -88,11 +116,7 @@ int main( int argc, char* argv[] )
             "translations", QStandardPaths::LocateDirectory));
     app.installTranslator(&appTranslator);
 
-#if (QT_VERSION >= QT_VERSION_CHECK(5, 10, 0))
-    app.setAttribute(Qt::AA_DisableWindowContextHelpButton);
-#endif
-
-    QMatrixClient::NetworkSettings().setupApplicationProxy();
+    Quotient::NetworkSettings().setupApplicationProxy();
 
     MainWindow window;
     if (parser.isSet(debug))
@@ -102,8 +126,14 @@ int main( int argc, char* argv[] )
     }
 
     ActivityDetector ad(app, window); Q_UNUSED(ad);
-    qDebug() << "--- Show time!";
-    window.show();
+    if (parser.isSet(hideMainWindow)) {
+        qDebug() << "--- Hide time!";
+        window.hide();
+    }
+    else {
+        qDebug() << "--- Show time!";
+        window.show();
+    }
 
     return app.exec();
 }

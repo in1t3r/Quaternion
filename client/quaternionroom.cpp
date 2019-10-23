@@ -21,8 +21,9 @@
 
 #include <user.h>
 #include <events/roommessageevent.h>
+#include <QtCore/QRegularExpression>
 
-using namespace QMatrixClient;
+using namespace Quotient;
 
 QuaternionRoom::QuaternionRoom(Connection* connection, QString roomId,
                                JoinState joinState)
@@ -40,6 +41,16 @@ const QString& QuaternionRoom::cachedInput() const
 void QuaternionRoom::setCachedInput(const QString& input)
 {
     m_cachedInput = input;
+}
+
+const QString& QuaternionRoom::cachedUserFilter() const
+{
+    return m_cachedUserFilter;
+}
+
+void QuaternionRoom::setCachedUserFilter(const QString& input)
+{
+    m_cachedUserFilter = input;
 }
 
 bool QuaternionRoom::isEventHighlighted(const RoomEvent* e) const
@@ -76,6 +87,21 @@ void QuaternionRoom::saveViewport(int topIndex, int bottomIndex)
     setLastDisplayedEvent(maxTimelineIndex() - bottomIndex);
 }
 
+QString QuaternionRoom::prettyPrint(const QString& plainText) const
+{
+    return Room::prettyPrint(plainText);
+}
+
+bool QuaternionRoom::canSwitchVersions() const
+{
+    return Room::canSwitchVersions();
+}
+
+QString QuaternionRoom::safeMemberName(const QString& userId) const
+{
+    return sanitized(roomMembername(userId));
+}
+
 void QuaternionRoom::countChanged()
 {
     if( displayed() && !hasUnreadMessages() )
@@ -97,16 +123,20 @@ void QuaternionRoom::onAddHistoricalTimelineEvents(rev_iter_t from)
                   [this] (const TimelineItem& ti) { checkForHighlights(ti); });
 }
 
-void QuaternionRoom::checkForHighlights(const QMatrixClient::TimelineItem& ti)
+void QuaternionRoom::checkForHighlights(const Quotient::TimelineItem& ti)
 {
     auto localUserId = localUser()->id();
     if (ti->senderId() == localUserId)
         return;
     if (auto* e = ti.viewAs<RoomMessageEvent>())
     {
+        const QRegularExpression localUserRe("(\\W|^)" + localUserId + "(\\W|$)", QRegularExpression::MultilineOption | QRegularExpression::CaseInsensitiveOption);
+        const QRegularExpression roomMembernameRe("(\\W|^)" + roomMembername(localUserId) + "(\\W|$)", QRegularExpression::MultilineOption | QRegularExpression::CaseInsensitiveOption);
         const auto& text = e->plainBody();
-        if (text.contains(localUserId) ||
-                text.contains(roomMembername(localUserId)))
+        QRegularExpressionMatch localMatch = localUserRe.match(text, 0, QRegularExpression::PartialPreferFirstMatch);
+        QRegularExpressionMatch roomMemberMatch = roomMembernameRe.match(text, 0, QRegularExpression::PartialPreferFirstMatch);
+        if (localMatch.hasMatch() ||
+                roomMemberMatch.hasMatch())
             highlights.insert(e);
     }
 }

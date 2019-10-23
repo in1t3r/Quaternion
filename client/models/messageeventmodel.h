@@ -27,12 +27,32 @@ class MessageEventModel: public QAbstractListModel
 {
         Q_OBJECT
     public:
+        enum EventRoles {
+            EventTypeRole = Qt::UserRole + 1,
+            EventIdRole,
+            TimeRole,
+            SectionRole,
+            AboveSectionRole,
+            AuthorRole,
+            AboveAuthorRole,
+            ContentRole,
+            ContentTypeRole,
+            HighlightRole,
+            ReadMarkerRole,
+            SpecialMarksRole,
+            LongOperationRole,
+            AnnotationRole,
+            UserHueRole,
+            RefRole,
+            EventResolvedTypeRole,
+        };
+
         explicit MessageEventModel(QObject* parent = nullptr);
 
         void changeRoom(QuaternionRoom* room);
 
         int rowCount(const QModelIndex& parent = QModelIndex()) const override;
-        QVariant data(const QModelIndex& index, int role = Qt::DisplayRole) const override;
+        QVariant data(const QModelIndex& idx, int role = Qt::DisplayRole) const override;
         QHash<int, QByteArray> roleNames() const override;
 
     private slots:
@@ -40,17 +60,17 @@ class MessageEventModel: public QAbstractListModel
         void refreshRow(int row);
 
     private:
-        QuaternionRoom* m_currentRoom;
+        QuaternionRoom* m_currentRoom = nullptr;
         QString lastReadEventId;
         int rowBelowInserted = -1;
-        bool movingEvent = 0;
+        bool movingEvent = false;
 
         int timelineBaseIndex() const;
         QDateTime makeMessageTimestamp(const QuaternionRoom::rev_iter_t& baseIt) const;
         QString renderDate(const QDateTime& timestamp) const;
         bool isUserActivityNotable(const QuaternionRoom::rev_iter_t& baseIt) const;
 
-        void refreshLastUserEvents(int baseRow);
+        void refreshLastUserEvents(int baseTimelineRow);
         void refreshEventRoles(int row, const QVector<int>& roles = {});
         int refreshEventRoles(const QString& id, const QVector<int>& roles = {});
 };

@@ -22,6 +22,7 @@
 #include "mainwindow.h"
 #include "quaternionroom.h"
 #include <settings.h>
+#include <qt_connection_util.h>
 
 SystemTrayIcon::SystemTrayIcon(MainWindow* parent)
     : QSystemTrayIcon(parent)
@@ -32,16 +33,16 @@ SystemTrayIcon::SystemTrayIcon(MainWindow* parent)
     connect( this, &SystemTrayIcon::activated, this, &SystemTrayIcon::systemTrayIconAction);
 }
 
-void SystemTrayIcon::newRoom(QMatrixClient::Room* room)
+void SystemTrayIcon::newRoom(Quotient::Room* room)
 {
-    connect(room, &QMatrixClient::Room::highlightCountChanged,
-            this, &SystemTrayIcon::highlightCountChanged);
+    connect(room, &Quotient::Room::highlightCountChanged,
+            this, [this,room] { highlightCountChanged(room); });
 }
 
-void SystemTrayIcon::highlightCountChanged(QMatrixClient::Room* room)
+void SystemTrayIcon::highlightCountChanged(Quotient::Room* room)
 {
-    auto mode = QMatrixClient::SettingsGroup("UI")
-                                .value("notifications", "intrusive");
+    using namespace Quotient;
+    auto mode = SettingsGroup("UI").value("notifications", "intrusive");
     if (mode == "none")
         return;
     if( room->highlightCount() > 0 )
@@ -50,11 +51,9 @@ void SystemTrayIcon::highlightCountChanged(QMatrixClient::Room* room)
                     tr("%n highlight(s)", "", room->highlightCount()));
         if (mode != "non-intrusive")
             m_parent->activateWindow();
-        auto* qRoom = static_cast<QuaternionRoom*>(room);
-        connect(this, &SystemTrayIcon::messageClicked, m_parent, [this,qRoom] {
-            m_parent->selectRoom(qRoom);
-            disconnect(this, &SystemTrayIcon::messageClicked, nullptr, nullptr);
-        });
+        connectSingleShot(this, &SystemTrayIcon::messageClicked, m_parent,
+                          [this,qRoom=static_cast<QuaternionRoom*>(room)]
+                          { m_parent->selectRoom(qRoom); });
     }
 }
 
@@ -80,6 +79,7 @@ void SystemTrayIcon::showHide()
     else
     {
         m_parent->show();
+        m_parent->activateWindow();
         m_parent->raise();
         m_parent->setFocus();
     }

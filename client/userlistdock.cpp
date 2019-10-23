@@ -24,11 +24,13 @@
 #include <QtWidgets/QMenu>
 #include <QtWidgets/QLineEdit>
 #include <QtWidgets/QInputDialog>
+#include <QtGui/QGuiApplication>
 
 #include <connection.h>
 #include <room.h>
 #include <user.h>
 #include "models/userlistmodel.h"
+#include "quaternionroom.h"
 
 UserListDock::UserListDock(QWidget* parent)
     : QDockWidget(tr("Users"), parent)
@@ -39,9 +41,10 @@ UserListDock::UserListDock(QWidget* parent)
     m_box = new QVBoxLayout();
 
     m_box->addSpacing(1);
-    auto filterline = new QLineEdit(this);
-    filterline->setPlaceholderText(tr("Search"));
-    m_box->addWidget(filterline);
+    m_filterline = new QLineEdit(this);
+    m_filterline->setPlaceholderText(tr("Search"));
+    m_filterline->setDisabled(true);
+    m_box->addWidget(m_filterline);
 
     m_view = new QTableView(this);
     m_view->setShowGrid(false);
@@ -56,6 +59,10 @@ UserListDock::UserListDock(QWidget* parent)
 
     connect(m_view, &QTableView::activated,
             this, &UserListDock::requestUserMention);
+    connect( m_view, &QTableView::pressed, this, [this] {
+        if (QGuiApplication::mouseButtons() & Qt::MidButton)
+            startChatSelected();
+    });
 
     m_model = new UserListModel();
     m_view->setModel(m_model);
@@ -64,7 +71,7 @@ UserListDock::UserListDock(QWidget* parent)
              this, &UserListDock::refreshTitle );
     connect( m_model, &QAbstractListModel::modelReset,
              this, &UserListDock::refreshTitle );
-    connect(filterline, &QLineEdit::textEdited,
+    connect(m_filterline, &QLineEdit::textEdited,
              m_model, &UserListModel::filter);
 
     contextMenu->addAction(QIcon::fromTheme("contact-new"),
@@ -86,22 +93,25 @@ UserListDock::UserListDock(QWidget* parent)
             this, &UserListDock::showContextMenu);
 }
 
-void UserListDock::setRoom(QMatrixClient::Room* room)
+void UserListDock::setRoom(QuaternionRoom* room)
 {
+    if (m_currentRoom)
+        m_currentRoom->setCachedUserFilter(m_filterline->text());
     m_currentRoom = room;
     m_model->setRoom(room);
+    m_filterline->setEnabled(room);
+    m_filterline->setText(room ? room->cachedUserFilter() : "");
+    m_model->filter(m_filterline->text());
 }
 
 void UserListDock::refreshTitle()
 {
-    setWindowTitle(
-        !m_currentRoom ? tr("Users") :
-        m_model->rowCount() == m_currentRoom->joinedCount() ?
-            tr("Users (%Ln)", "The caption with users number",
-               m_currentRoom->joinedCount()) :
-            tr("Users (%Ln out of %L1)",
-               "Caption with the number of found and total numbers of users",
-               m_model->rowCount()).arg(m_currentRoom->joinedCount())
+    setWindowTitle(tr("Users") +
+        (!m_currentRoom ? QString() :
+         ' ' + (m_model->rowCount() == m_currentRoom->joinedCount() ?
+                    QStringLiteral("(%L1)").arg(m_currentRoom->joinedCount()) :
+                    tr("(%L1 out of %L2)", "%found out of %total users")
+                    .arg(m_model->rowCount()).arg(m_currentRoom->joinedCount())))
     );
 }
 
@@ -168,7 +178,7 @@ bool UserListDock::isIgnored()
     return false;
 }
 
-QMatrixClient::User* UserListDock::getSelectedUser() const
+Quotient::User* UserListDock::getSelectedUser() const
 {
     auto index = m_view->currentIndex();
     if (!index.isValid())

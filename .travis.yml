@@ -1,15 +1,16 @@
 language: cpp
-dist: xenial
+dist: bionic
 
 git:
   depth: false
 
-before_cache:
-  - brew cleanup
-
 cache:
-  directories:
-    - $HOME/Library/Caches/Homebrew
+  apt: true
+
+env:
+  global:
+  - DESTDIR: "$TRAVIS_BUILD_DIR/install"
+  - CMAKE_ARGS="-DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_PREFIX_PATH=$DESTDIR/usr"
 
 matrix:
   include:
@@ -17,43 +18,30 @@ matrix:
     compiler: gcc
     addons:
       apt:
-        sources:
-        - sourceline: 'ppa:beineri/opt-qt571-xenial'
         packages:
-        - mesa-common-dev # Forgotten dep of qt57base
-        - qt57base
-        - qt57imageformats
-        - qt57svg
-        - qt57multimedia
-        - qt57quickcontrols
-        - qt57quickcontrols2
-        - qt57tools
+        - ninja-build
+        - qtdeclarative5-dev
+        - qml-module-qtquick-controls
+        - qml-module-qtquick-controls2
+        - qtmultimedia5-dev
+        - qttools5-dev
+        - qt5keychain-dev
   - os: linux
-    dist: trusty
-    compiler: clang
-    env: [ 'VERSION_SUFFIX="-compat"' ]
+    dist: xenial
+    compiler: gcc
+    env:
+    - BUILD_APPIMAGE=1
+    - CMAKE_ARGS="$CMAKE_ARGS -DBUILD_SHARED_LIBS=OFF"
+    - CC=gcc-7
+    - CXX=g++-7
     addons:
       apt:
         sources:
         - ubuntu-toolchain-r-test
-        - sourceline: 'ppa:beineri/opt-qt571-trusty'
+        - sourceline: 'ppa:beineri/opt-qt-5.12.3-xenial'
         packages:
-        - libstdc++-5-dev
-        - qt57base
-        - qt57imageformats
-        - qt57svg
-        - qt57multimedia
-        - qt57quickcontrols
-        - qt57quickcontrols2
-        - qt57tools
-  - os: linux
-    compiler: clang
-    addons:
-      apt:
-        sources:
-        - sourceline: 'ppa:beineri/opt-qt-5.12.0-xenial'
-        packages:
-        - mesa-common-dev # Forgotten dep of qt512base
+        - g++-7
+        - libgl1-mesa-dev # Forgotten Qt dep
         - qt512base
         - qt512imageformats
         - qt512svg
@@ -62,52 +50,100 @@ matrix:
         - qt512quickcontrols2
         - qt512tools
         - qt512translations
+        - qt5keychain-dev
+        - appstream-util
+    after_success:
+    # TODO: maybe move AppImage generation to CMakeLists.txt
+    # (pre-wgetting AppImageKit to avoid CMakeList.txt dependency on Internet?)
+    # FIXME: The AppImageKit downloadables should at the very least be verified
+    - mkdir AppImageKit && pushd AppImageKit
+    - |
+      wget -c -nv \
+        "https://github.com/probonopd/linuxdeployqt/releases/download/continuous/linuxdeployqt-continuous-x86_64.AppImage" \
+        "https://github.com/darealshinji/AppImageKit-checkrt/releases/download/continuous/exec-x86_64.so" \
+        "https://github.com/darealshinji/AppImageKit-checkrt/releases/download/continuous/AppRun-patched-x86_64"
+    - chmod a+x ./linuxdeployqt-continuous-x86_64.AppImage
+    - install -D -m "u=rw,go=r" -t $DESTDIR/usr/optional/libstdc++ /usr/lib/x86_64-linux-gnu/libstdc++.so.6
+    - install -D -m "u=rw,go=r" ./exec*.so $DESTDIR/usr/optional/exec.so
+    - install -m "u=rwx,go=rx" ./AppRun* $DESTDIR/AppRun
+    - unset QTDIR QT_PLUGIN_PATH LD_LIBRARY_PATH
+    - |
+      ./linuxdeployqt-continuous-x86_64.AppImage \
+        $DESTDIR/usr/share/applications/*.desktop -appimage \
+        -extra-plugins=iconengines,platformthemes/libqgtk3.so \
+        -qmldir=$TRAVIS_BUILD_DIR/client/qml -verbose=$DEPLOY_VERBOSITY
+    - popd
+
+  - os: linux
+    compiler: clang
+    addons:
+      apt:
+        sources:
+        - sourceline: 'ppa:beineri/opt-qt-5.12.3-bionic'
+        packages:
+        - ninja-build
+        - libgl1-mesa-dev # Forgotten Qt dep
+        - qt512base
+        - qt512imageformats
+        - qt512svg
+        - qt512multimedia
+        - qt512quickcontrols
+        - qt512quickcontrols2
+        - qt512tools
+        - qt512translations
+        - qt5keychain-dev
+        - appstream-util
   - os: osx
-    env: [ 'PATH=/usr/local/opt/qt/bin:$PATH"' ]
+    env: [ 'PATH=/usr/local/opt/qt/bin:$PATH' ]
+    before_cache:
+    - brew cleanup
+    cache:
+      directories:
+      - $HOME/Library/Caches/Homebrew
     addons:
       homebrew:
+        update: true
         packages:
         - qt5
+        - qtkeychain
+    after_success:
+    - _cmake_build --target image
+    - mv -v build/quaternion.dmg "quaternion-$VERSION.dmg"
 
 before_install:
-- eval "${ENV_EVAL}"
-- if [ -f /opt/qt57/bin/qt57-env.sh ]; then . /opt/qt57/bin/qt57-env.sh; fi
 - if [ -f /opt/qt512/bin/qt512-env.sh ]; then . /opt/qt512/bin/qt512-env.sh; fi
+# VERSION is also used by linuxdeployqt
+- if [ -n "$TRAVIS_TAG" ]; then export VERSION="$TRAVIS_TAG"; else export VERSION="git$(git rev-list --count HEAD)"; fi
+- if [ -f "$(which ninja)" ]; then export CMAKE_ARGS="$CMAKE_ARGS -GNinja"; fi
+# RPM spec-style: swallow a command with default parameters into a variable
+# and add/override parameters further in the code if/as necessary
+- shopt -s expand_aliases
+- alias _cmake_config='cmake $CMAKE_ARGS . -Bbuild'
+- alias _cmake_build='cmake --build build'
 
-script:
-- mkdir build && pushd build
-- export INSTALLDIR=install
-- cmake .. -LA -DUSE_INTREE_LIBQMC=1 -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_INSTALL_PREFIX=/usr # TODO: add building with an external lib
-#- appstream-util validate linux/*.appdata.xml
-- cmake --build . --target all
-- export DESTDIR=$TRAVIS_BUILD_DIR/$INSTALLDIR
-- cmake --build . --target install && find $DESTDIR/
+install:
+- git clone https://gitlab.matrix.org/matrix-org/olm.git
+- pushd olm
+- _cmake_config
+- _cmake_build # TODO: --target install when the patch for olm lands
 - popd
 
-after_success:
-- export VERSION=$(git rev-list --count HEAD) # linuxdeployqt uses this for naming the file
-- sed -i -e "s/VERSION_VALUE/git-$VERSION/g" .ci/bintray-release.json
-- sed -i -e "s/VERSION_SUFFIX/$VERSION_SUFFIX/g" .ci/bintray-release.json
+#before_script is reserved for customisation in the build matrix
+
+script:
+# TODO: add building with an external lib
+- _cmake_config -LA -DUSE_INTREE_LIBQMC=1 -DDEPLOY_VERBOSITY=$DEPLOY_VERBOSITY
+- if [ -f "$(which appstream-util)" ]; then appstream-util validate linux/*.appdata.xml; fi
+- _cmake_build --target all
+- if [ "$TRAVIS_OS_NAME" = "linux" ]; then _cmake_build --target install; fi
+
+#after_success is reserved for customisation in the build matrix
+
+before_deploy:
+- sed -i -e "s/VERSION_VALUE/$VERSION/g" .ci/bintray-release.json
 - sed -i -e "s/BINTRAY_SUBJECT/$BINTRAY_SUBJECT/g" .ci/bintray-release.json
 - sed -i -e "s/BINTRAY_REPO/$BINTRAY_REPO/g" .ci/bintray-release.json
 - sed -i -e "s/BINTRAY_NAME/$BINTRAY_NAME/g" .ci/bintray-release.json
-- |
-  if [ "$TRAVIS_OS_NAME" = "linux" ] && [ "$CC" = "clang" ]; then
-    # FIXME: The below downloadables should at the very least be verified
-    wget -c -nv "https://github.com/probonopd/linuxdeployqt/releases/download/continuous/linuxdeployqt-continuous-x86_64.AppImage"
-    chmod a+x linuxdeployqt-continuous-x86_64.AppImage
-    unset QTDIR QT_PLUGIN_PATH LD_LIBRARY_PATH
-    pushd $INSTALLDIR
-      mkdir -p ./usr/optional/libstdc++
-      wget -c -nv "https://github.com/darealshinji/AppImageKit-checkrt/releases/download/continuous/exec-x86_64.so" -O ./usr/optional/exec.so
-      cp /usr/lib/x86_64-linux-gnu/libstdc++.so.6 ./usr/optional/libstdc++/
-      wget -c https://github.com/darealshinji/AppImageKit-checkrt/releases/download/continuous/AppRun-patched-x86_64 --unlink -O AppRun
-      chmod a+x AppRun
-    popd
-    ./linuxdeployqt-continuous-x86_64.AppImage \
-        $INSTALLDIR/usr/share/applications/*.desktop -qmldir=client/qml -appimage
-    export APPIMAGE_READY=1
-  fi
 
 deploy:
 - provider: bintray
@@ -120,17 +156,18 @@ deploy:
 
 - provider: releases
   api_key: $GITHUB_API_KEY
-  file: build/quaternion.dmg
+  file: quaternion-$VERSION.dmg
   skip_cleanup: true
   on:
     tags: true
 
 - provider: releases
   api_key: $GITHUB_API_KEY
-  file: Quaternion*.AppImage
+  file_glob: true
+  file: AppImageKit/Quaternion*.AppImage
   skip_cleanup: true
   on:
-    condition: -n "$RELEASE_APPIMAGE" && -n "$APPIMAGE_READY"
+    condition: -n "$RELEASE_APPIMAGE"
     tags: true
 
 notifications:

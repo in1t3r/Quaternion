@@ -67,6 +67,11 @@ void Dialog::addWidget(QWidget* w)
     outerLayout.insertWidget(outerLayout.count() - offset, w);
 }
 
+QPushButton*Dialog::button(QDialogButtonBox::StandardButton which)
+{
+    return buttonBox()->button(which);
+}
+
 void Dialog::reactivate()
 {
     if (!isVisible())
@@ -95,15 +100,20 @@ void Dialog::buttonClicked(QAbstractButton* button)
     switch (buttons->buttonRole(button))
     {
         case QDialogButtonBox::AcceptRole:
-            if (statusLabel)
-                statusLabel->setText(pendingApplyMessage);
-            setDisabled(true);
-            apply();
+        case QDialogButtonBox::YesRole:
+            if (validate())
+            {
+                if (statusLabel)
+                    statusLabel->setText(pendingApplyMessage);
+                setDisabled(true);
+                apply();
+            }
             break;
         case QDialogButtonBox::ResetRole:
             load();
             break;
         case QDialogButtonBox::RejectRole:
+        case QDialogButtonBox::NoRole:
             reject();
             break;
         default:

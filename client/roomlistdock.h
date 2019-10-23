@@ -24,10 +24,11 @@
 #include <QtCore/QStringListModel>
 //#include <QtCore/QSortFilterProxyModel>
 
+class MainWindow;
 class RoomListModel;
 class QuaternionRoom;
 
-namespace QMatrixClient {
+namespace Quotient {
     class Connection;
 }
 
@@ -35,12 +36,13 @@ class RoomListDock : public QDockWidget
 {
         Q_OBJECT
     public:
-        explicit RoomListDock(QWidget* parent = nullptr);
+        explicit RoomListDock(MainWindow* parent = nullptr);
 
-        void addConnection(QMatrixClient::Connection* connection);
+        void addConnection(Quotient::Connection* connection);
 
     public slots:
         void updateSortingMode();
+        void setSelectedRoom(QuaternionRoom* room);
 
     signals:
         void roomSelected(QuaternionRoom* room);

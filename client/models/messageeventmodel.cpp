@@ -26,29 +26,13 @@
 #include <connection.h>
 #include <user.h>
 #include <settings.h>
+#include <events/encryptionevent.h>
 #include <events/roommemberevent.h>
 #include <events/simplestateevents.h>
 #include <events/redactionevent.h>
 #include <events/roomavatarevent.h>
-
-enum EventRoles {
-    EventTypeRole = Qt::UserRole + 1,
-    EventIdRole,
-    TimeRole,
-    SectionRole,
-    AboveSectionRole,
-    AuthorRole,
-    AboveAuthorRole,
-    ContentRole,
-    ContentTypeRole,
-    HighlightRole,
-    ReadMarkerRole,
-    SpecialMarksRole,
-    LongOperationRole,
-    AnnotationRole,
-    // For debugging
-    EventResolvedTypeRole,
-};
+#include <events/roomcreateevent.h>
+#include <events/roomtombstoneevent.h>
 
 QHash<int, QByteArray> MessageEventModel::roleNames() const
 {
@@ -67,17 +51,18 @@ QHash<int, QByteArray> MessageEventModel::roleNames() const
     roles[SpecialMarksRole] = "marks";
     roles[LongOperationRole] = "progressInfo";
     roles[AnnotationRole] = "annotation";
+    roles[UserHueRole] = "userHue";
     roles[EventResolvedTypeRole] = "eventResolvedType";
+    roles[RefRole] = "refId";
     return roles;
 }
 
 MessageEventModel::MessageEventModel(QObject* parent)
     : QAbstractListModel(parent)
-    , m_currentRoom(nullptr)
 {
-    using namespace QMatrixClient;
+    using namespace Quotient;
     qmlRegisterType<FileTransferInfo>(); qRegisterMetaType<FileTransferInfo>();
-    qmlRegisterUncreatableType<EventStatus>("QMatrixClient", 1, 0, "EventStatus",
+    qmlRegisterUncreatableType<EventStatus>("Quotient", 1, 0, "EventStatus",
         "EventStatus is not an creatable type");
 }
 
@@ -98,7 +83,7 @@ void MessageEventModel::changeRoom(QuaternionRoom* room)
     {
         lastReadEventId = room->readMarkerEventId();
 
-        using namespace QMatrixClient;
+        using namespace Quotient;
         connect(m_currentRoom, &Room::aboutToAddNewMessages, this,
                 [=](RoomEventsRange events)
                 {
@@ -240,7 +225,7 @@ int MessageEventModel::refreshEventRoles(const QString& id,
     return row;
 }
 
-inline bool hasValidTimestamp(const QMatrixClient::TimelineItem& ti)
+inline bool hasValidTimestamp(const Quotient::TimelineItem& ti)
 {
     return ti->timestamp().isValid();
 }
@@ -255,7 +240,7 @@ QDateTime MessageEventModel::makeMessageTimestamp(
 
     // The event is most likely redacted or just invalid.
     // Look for the nearest date around and slap zero time to it.
-    using QMatrixClient::TimelineItem;
+    using Quotient::TimelineItem;
     auto rit = std::find_if(baseIt, timeline.rend(),
                       hasValidTimestamp);
     if (rit != timeline.rend())
@@ -272,7 +257,7 @@ QDateTime MessageEventModel::makeMessageTimestamp(
 QString MessageEventModel::renderDate(const QDateTime& timestamp) const
 {
     auto date = timestamp.toLocalTime().date();
-    if (QMatrixClient::SettingsGroup("UI")
+    if (Quotient::SettingsGroup("UI")
             .value("banner_human_friendly_date", true).toBool())
     {
         if (date == QDate::currentDate())
@@ -306,7 +291,7 @@ bool MessageEventModel::isUserActivityNotable(
     // double-check that there are no redactions and that it's not a single
     // join or leave.
 
-    using namespace QMatrixClient;
+    using namespace Quotient;
     bool joinFound = false, redactionsFound = false;
     // Find the nearest join of this user above, or a no-nonsense event.
     for (auto it = baseIt,
@@ -419,7 +404,7 @@ QVariant MessageEventModel::data(const QModelIndex& idx, int role) const
                                 std::min(row, timelineBaseIndex());
     const auto& evt = isPending ? **pendingIt : **timelineIt;
 
-    using namespace QMatrixClient;
+    using namespace Quotient;
     if( role == Qt::DisplayRole )
     {
         if (evt.isRedacted())
@@ -428,10 +413,10 @@ QVariant MessageEventModel::data(const QModelIndex& idx, int role) const
             if (reason.isEmpty())
                 return tr("Redacted");
 
-            return tr("Redacted: %1")
-                .arg(evt.redactedBecause()->reason());
+            return tr("Redacted: %1").arg(reason.toHtmlEscaped());
         }
 
+        // clang-format off
         return visit(evt
             , [this] (const RoomMessageEvent& e) {
                 using namespace MessageEventContent;
@@ -440,7 +425,8 @@ QVariant MessageEventModel::data(const QModelIndex& idx, int role) const
                     return static_cast<const TextContent*>(e.content())->body;
                 if (e.hasFileContent())
                 {
-                    auto fileCaption = e.content()->fileInfo()->originalName;
+                    auto fileCaption =
+                        e.content()->fileInfo()->originalName.toHtmlEscaped();
                     if (fileCaption.isEmpty())
                         fileCaption = m_currentRoom->prettyPrint(e.plainBody());
                     return !fileCaption.isEmpty() ? fileCaption : tr("a file");
@@ -449,14 +435,15 @@ QVariant MessageEventModel::data(const QModelIndex& idx, int role) const
             }
             , [this] (const RoomMemberEvent& e) {
                 // FIXME: Rewind to the name that was at the time of this event
-                QString subjectName = m_currentRoom->roomMembername(e.userId());
+                const auto subjectName =
+                    m_currentRoom->safeMemberName(e.userId()).toHtmlEscaped();
                 // The below code assumes senderName output in AuthorRole
                 switch( e.membership() )
                 {
                     case MembershipType::Invite:
                         if (e.repeatsState())
                             return tr("reinvited %1 to the room").arg(subjectName);
-                        FALLTHROUGH;
+                        Q_FALLTHROUGH();
                     case MembershipType::Join:
                     {
                         if (e.repeatsState())
@@ -475,7 +462,7 @@ QVariant MessageEventModel::data(const QModelIndex& idx, int role) const
                                 text = tr("cleared the display name");
                             else
                                 text = tr("changed the display name to %1")
-                                            .arg(e.displayName());
+                                       .arg(e.displayName().toHtmlEscaped());
                         }
                         if (e.isAvatarUpdate())
                         {
@@ -490,6 +477,14 @@ QVariant MessageEventModel::data(const QModelIndex& idx, int role) const
                     }
                     case MembershipType::Leave:
                         if (e.prevContent() &&
+                            e.prevContent()->membership == MembershipType::Invite)
+                        {
+                            return (e.senderId() != e.userId())
+                                    ? tr("withdrew %1's invitation").arg(subjectName)
+                                    : tr("rejected the invitation");
+                        }
+
+                        if (e.prevContent() &&
                                 e.prevContent()->membership == MembershipType::Ban)
                         {
                             return (e.senderId() != e.userId())
@@ -497,11 +492,17 @@ QVariant MessageEventModel::data(const QModelIndex& idx, int role) const
                                     : tr("self-unbanned");
                         }
                         return (e.senderId() != e.userId())
-                                ? tr("has put %1 out of the room").arg(subjectName)
+                                ? tr("has put %1 out of the room: %2")
+                                  .arg(subjectName,
+                                       e.contentJson()["reason"_ls]
+                                       .toString().toHtmlEscaped())
                                 : tr("left the room");
                     case MembershipType::Ban:
                         return (e.senderId() != e.userId())
-                                ? tr("banned %1 from the room").arg(subjectName)
+                                ? tr("banned %1 from the room: %2")
+                                  .arg(subjectName,
+                                       e.contentJson()["reason"_ls]
+                                       .toString().toHtmlEscaped())
                                 : tr("self-banned from the room");
                     case MembershipType::Knock:
                         return tr("knocked");
@@ -511,7 +512,9 @@ QVariant MessageEventModel::data(const QModelIndex& idx, int role) const
                 return tr("made something unknown");
             }
             , [] (const RoomAliasesEvent& e) {
-                return tr("set aliases to: %1").arg(e.aliases().join(", "));
+                return tr("has set room aliases on server %1 to: %2")
+                       .arg(e.stateKey(),
+                            QLocale().createSeparatedList(e.aliases()));
             }
             , [] (const RoomCanonicalAliasEvent& e) {
                 return (e.alias().isEmpty())
@@ -521,12 +524,14 @@ QVariant MessageEventModel::data(const QModelIndex& idx, int role) const
             , [] (const RoomNameEvent& e) {
                 return (e.name().isEmpty())
                         ? tr("cleared the room name")
-                        : tr("set the room name to: %1").arg(e.name());
+                        : tr("set the room name to: %1")
+                          .arg(e.name().toHtmlEscaped());
             }
-            , [] (const RoomTopicEvent& e) {
+            , [this] (const RoomTopicEvent& e) {
                 return (e.topic().isEmpty())
                         ? tr("cleared the topic")
-                        : tr("set the topic to: %1").arg(e.topic());
+                        : tr("set the topic to: %1")
+                          .arg(m_currentRoom->prettyPrint(e.topic()));
             }
             , [] (const RoomAvatarEvent&) {
                 return tr("changed the room avatar");
@@ -534,18 +539,31 @@ QVariant MessageEventModel::data(const QModelIndex& idx, int role) const
             , [] (const EncryptionEvent&) {
                 return tr("activated End-to-End Encryption");
             }
+            , [] (const RoomCreateEvent& e) {
+                return (e.isUpgrade()
+                        ? tr("upgraded the room to version %1")
+                        : tr("created the room, version %1")
+                       ).arg(e.version().isEmpty()
+                             ? "1" : e.version().toHtmlEscaped());
+            }
+            , [] (const RoomTombstoneEvent& e) {
+                return tr("upgraded the room: %1")
+                       .arg(e.serverMessage().toHtmlEscaped());
+            }
             , [] (const StateEventBase& e) {
                 // A small hack for state events from TWIM bot
-                return e.stateKey() == "twim" ? tr("updated the database") :
-                    e.stateKey().isEmpty() ?
-                        tr("updated %1 state", "%1 - Matrix event type")
-                        .arg(e.matrixType()) :
-                    tr("updated %1 state for %2",
-                       "%1 - Matrix event type, %2 - state key")
-                    .arg(e.matrixType(), e.stateKey());
+                return e.stateKey() == "twim"
+                    ? tr("updated the database", "TWIM bot updated the database")
+                    : e.stateKey().isEmpty()
+                    ? tr("updated %1 state", "%1 - Matrix event type")
+                      .arg(e.matrixType())
+                    : tr("updated %1 state for %2",
+                         "%1 - Matrix event type, %2 - state key")
+                      .arg(e.matrixType(), e.stateKey().toHtmlEscaped());
             }
             , tr("Unknown event")
         );
+        // clang-format on
     }
 
     if( role == Qt::ToolTipRole )
@@ -601,10 +619,10 @@ QVariant MessageEventModel::data(const QModelIndex& idx, int role) const
     {
         if (evt.isRedacted())
         {
-            auto reason = evt.redactedBecause()->reason();
+            const auto reason = evt.redactedBecause()->reason();
             return (reason.isEmpty())
                     ? tr("Redacted")
-                    : tr("Redacted: %1").arg(evt.redactedBecause()->reason());
+                    : tr("Redacted: %1").arg(reason.toHtmlEscaped());
         }
 
         if (auto e = eventCast<const RoomMessageEvent>(&evt))
@@ -674,13 +692,13 @@ QVariant MessageEventModel::data(const QModelIndex& idx, int role) const
         if (auto e = eventCast<const RoomMessageEvent>(&evt))
             if (e->hasFileContent())
                 return QVariant::fromValue(
-                            m_currentRoom->fileTransferInfo(e->id()));
+                            m_currentRoom->fileTransferInfo(
+                                isPending ? e->transactionId() : e->id()));
     }
 
     if( role == AnnotationRole )
         if (isPending)
             return pendingIt->annotation();
-
 
     if( role == TimeRole || role == SectionRole)
     {
@@ -697,6 +715,16 @@ QVariant MessageEventModel::data(const QModelIndex& idx, int role) const
                 return data(i, role == AboveSectionRole
                                 ? SectionRole : AuthorRole);
         }
+
+    if (role == UserHueRole)
+        return QVariant::fromValue(isPending
+                                   ? m_currentRoom->localUser()->hueF()
+                                   : m_currentRoom->user(evt.senderId())->hueF());
+
+    if (role == RefRole)
+        return visit(
+            evt, [](const RoomCreateEvent& e) { return e.predecessor().roomId; },
+            [](const RoomTombstoneEvent& e) { return e.successorRoomId(); });
 
     return {};
 }

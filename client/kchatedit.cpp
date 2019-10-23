@@ -16,15 +16,20 @@
  */
 
 #include "kchatedit.h"
+#include <settings.h>
 
 #include <QDebug>
 #include <QGuiApplication>
 #include <QKeyEvent>
 
+static inline QTextDocument* makeDocument()
+{
+    return new QTextDocument;
+}
+
 class KChatEdit::KChatEditPrivate
 {
 public:
-    void emitReturnPressed();
     QString getDocumentText(QTextDocument* doc) const;
     void updateAndMoveInHistory(int increment);
     void rewindHistory();
@@ -35,19 +40,10 @@ public:
     // History always ends with a placeholder string that is initially empty
     // but may be filled with tentative input when the user entered something
     // and then went out for history.
-    QVector<QTextDocument*> history { 1, new QTextDocument() };
+    QVector<QTextDocument*> history { 1, makeDocument() };
     int index = 0;
     int maxHistorySize = 100;
 };
-
-void KChatEdit::KChatEditPrivate::emitReturnPressed()
-{
-    if (q->document()->isEmpty()) {
-        return;
-    }
-
-    emit q->returnPressed();
-}
 
 QString KChatEdit::KChatEditPrivate::getDocumentText(QTextDocument* doc) const
 {
@@ -108,7 +104,7 @@ void KChatEdit::KChatEditPrivate::saveInput()
             delete history.takeFirst();
         }
         // Make a new placeholder.
-        history << new QTextDocument();
+        history << makeDocument();
         emit q->savedInputChanged();
     }
 
@@ -122,6 +118,8 @@ KChatEdit::KChatEdit(QWidget *parent)
     setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
     connect(this, &QTextEdit::textChanged, this, &QWidget::updateGeometry);
     d->q = this; // KChatEdit initialization complete, pimpl can use it
+
+    setDocument(makeDocument());
 }
 
 KChatEdit::~KChatEdit() = default;
@@ -149,7 +147,7 @@ void KChatEdit::setHistory(const QVector<QTextDocument*> &history)
 {
     d->history = history;
     if (history.isEmpty() || !history.last()->isEmpty()) {
-        d->history << new QTextDocument();
+        d->history << makeDocument();
     }
 
     while (d->history.size() > maxHistorySize()) {
@@ -177,12 +175,14 @@ QSize KChatEdit::minimumSizeHint() const
     margins += contentsMargins();
 
     if (!placeholderText().isEmpty()) {
-        minimumSizeHint.setWidth(fontMetrics().width(placeholderText()) + margins.left()*2.5);
+        minimumSizeHint.setWidth(int(
+            fontMetrics().boundingRect(placeholderText()).width()
+            + margins.left()*2.5));
     }
     if (document()->isEmpty()) {
         minimumSizeHint.setHeight(fontMetrics().lineSpacing() + margins.top() + margins.bottom());
     } else {
-        minimumSizeHint.setHeight(document()->size().height());
+        minimumSizeHint.setHeight(int(document()->size().height()));
     }
 
     return minimumSizeHint;
@@ -214,11 +214,16 @@ QSize KChatEdit::sizeHint() const
 
 void KChatEdit::keyPressEvent(QKeyEvent *event)
 {
+    if (event->matches(QKeySequence::Copy)) {
+        emit copyRequested();
+        return;
+    }
+
     switch (event->key()) {
     case Qt::Key_Enter:
     case Qt::Key_Return:
         if (!(QGuiApplication::keyboardModifiers() & Qt::ShiftModifier)) {
-            d->emitReturnPressed();
+            emit returnPressed();
             return;
         }
         break;

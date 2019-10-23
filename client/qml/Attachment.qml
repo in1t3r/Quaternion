@@ -1,5 +1,5 @@
 import QtQuick 2.0
-import QMatrixClient 1.0
+import Quotient 1.0
 
 Item {
     width: parent.width
@@ -16,7 +16,7 @@ Item {
 
     function openExternally()
     {
-        if (progressInfo.localPath || downloaded)
+        if (progressInfo.localPath.toString() || downloaded)
             openLocalFile()
         else
         {
@@ -40,5 +40,10 @@ Item {
         controller.showStatusMessage(
             "Couldn't determine how to open the file or its folder.",
             5000)
+    }
+
+    Connections {
+        target: controller
+        onOpenExternally: if (currentIndex === index) openExternally()
     }
 }

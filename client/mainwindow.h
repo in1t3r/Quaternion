@@ -21,7 +21,7 @@
 
 #include <QtWidgets/QMainWindow>
 
-namespace QMatrixClient {
+namespace Quotient {
     class Room;
     class Connection;
     class AccountSettings;
@@ -32,6 +32,7 @@ class UserListDock;
 class ChatRoomWidget;
 class SystemTrayIcon;
 class QuaternionRoom;
+class LoginDialog;
 
 class QAction;
 class QMenu;
@@ -39,19 +40,29 @@ class QMenuBar;
 class QSystemTrayIcon;
 class QMovie;
 class QLabel;
+class QLineEdit;
 
 class QNetworkReply;
 class QSslError;
 class QNetworkProxy;
 class QAuthenticator;
 
+struct Locator
+{
+    enum ResolveResult { Success, NotFound, MalformedId, NoAccount };
+
+    Quotient::Connection* account = nullptr;
+    QString identifier; //< Room id, room alias, or user id
+};
+
 class MainWindow: public QMainWindow
 {
         Q_OBJECT
     public:
-        using Connection = QMatrixClient::Connection;
+        using Connection = Quotient::Connection;
 
         MainWindow();
+        ~MainWindow() override;
 
         void enableDebug();
 
@@ -60,18 +71,27 @@ class MainWindow: public QMainWindow
 
         ChatRoomWidget* getChatRoomWidget() const;
 
-    public slots:
-        void selectRoom(QMatrixClient::Room* r);
+        /// Tries to resolve the locator using the specified action hint
+        /*!
+         * This method doesn't show warnings or errors in UI; it either
+         * executes what's requested or returns an error result. It is up to
+         * the caller to provide any messages upon failure. One exception
+         * is opening direct chats; openLocator() will always ask a confirmation
+         * from the user because this action may lead to creation of a new room
+         * and invitation being sent.
+         */
+        Locator::ResolveResult openLocator(const Locator& l,
+                                           const QString& action = {});
 
-    protected:
-        void closeEvent(QCloseEvent* event) override;
+    public slots:
+        /// Opens non-empty id or URI using the specified action hint
+        /*! Asks the user to choose the connection if necessary */
+        void openResource(const QString& idOrUri, const QString& action = {});
+        void selectRoom(Quotient::Room* r);
 
     private slots:
         void invokeLogin();
-        void joinRoom(const QString& roomAlias = {},
-                      Connection* connection = nullptr);
-        void directChat(const QString& roomAlias = {},
-                      Connection* connection = nullptr);
+        void joinRoom(const QString& roomAlias = {});
         void getNewEvents(Connection* c);
         void gotEvents(Connection* c);
 
@@ -82,10 +102,18 @@ class MainWindow: public QMainWindow
                                          QAuthenticator* auth);
 
         void showLoginWindow(const QString& statusMessage = {});
+        void showLoginWindow(const QString& statusMessage,
+            Quotient::AccountSettings& reloginAccount);
         void showAboutWindow();
         void logout(Connection* c);
 
     private:
+        enum CompletionType {
+            None,
+            Room,
+            User
+        };
+
         QVector<Connection*> connections;
         QVector<Connection*> logoutOnExit;
 
@@ -98,8 +126,11 @@ class MainWindow: public QMainWindow
 
         QMenu* connectionMenu = nullptr;
         QAction* accountListGrowthPoint = nullptr;
+        QAction* openRoomAction = nullptr;
         QAction* roomSettingsAction = nullptr;
         QAction* createRoomAction = nullptr;
+        QAction* dcAction = nullptr;
+        QAction* joinAction = nullptr;
 
         SystemTrayIcon* systemTrayIcon = nullptr;
 
@@ -114,9 +145,45 @@ class MainWindow: public QMainWindow
         void showFirstSyncIndicator();
         void loadSettings();
         void saveSettings() const;
-        QByteArray loadAccessToken(const QMatrixClient::AccountSettings& account);
-        bool saveAccessToken(const QMatrixClient::AccountSettings& account,
+        void processLogin(LoginDialog& dialog);
+        QByteArray loadAccessToken(const Quotient::AccountSettings& account);
+        QByteArray loadAccessTokenFromFile(const Quotient::AccountSettings& account);
+        QByteArray loadAccessTokenFromKeyChain(const Quotient::AccountSettings &account);
+        bool saveAccessToken(const Quotient::AccountSettings& account,
                              const QByteArray& accessToken);
-        Connection* chooseConnection();
+        bool saveAccessTokenToFile(const Quotient::AccountSettings& account,
+                                   const QByteArray& accessToken);
+        bool saveAccessTokenToKeyChain(const Quotient::AccountSettings& account,
+                                       const QByteArray& accessToken, bool writeToFile = true);
+        Connection* chooseConnection(Connection* connection,
+                                     const QString& prompt);
         void showMillisToRecon(Connection* c);
+
+        /// Get the default connection to perform actions
+        /*!
+         * \return the connection of the current room; or, if there's only
+         *         one connection, that connection; failing that, nullptr
+         */
+        Connection* getDefaultConnection() const;
+
+        QString resolveToId(const QString &uri);
+
+        /// Ask a user to pick an account and enter the Matrix identifier
+        /*!
+         * The identifier can be a room id or alias (to join/open rooms) or
+         * a user MXID (e.g., to open direct chats or user profiles).
+         * \param initialConn initially selected account, if there are several
+         * \param completionType - type of completion
+         * \param prompt - dialog box title
+         * \param label - the text next to the identifier field (e.g., "User ID")
+         * \param actionName - the text on the accepting button
+         */
+        Locator obtainIdentifier(Connection* initialConn,
+                                 QFlags<CompletionType> completionType,
+                                 const QString& prompt, const QString& label,
+                                 const QString& actionName);
+        void setCompleter(QLineEdit* edit, Connection* connection,
+                          QFlags<CompletionType> type);
+
+        void closeEvent(QCloseEvent* event) override;
 };

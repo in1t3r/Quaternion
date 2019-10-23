@@ -15,27 +15,35 @@ Attachment {
         text: qsTr("Size: %1, declared type: %2")
               .arg(content.info ? humanSize(content.info.size) : "")
               .arg(content.info ? content.info.mimetype : "unknown")
-              + (progressInfo && progressInfo.uploading
-                 ? (progressInfo.completed
-                    ? qsTr(" (uploaded from %1)", "%1 is a local file name")
-                    : qsTr(" (being uploaded from %1)", "%1 is a local file name"))
-                   .arg(progressInfo.localPath)
+              + (progressInfo && progressInfo.isUpload
+                 ? " (" + (progressInfo.completed
+                    ? qsTr("uploaded from %1", "%1 is a local file name")
+                    : qsTr("being uploaded from %1", "%1 is a local file name"))
+                   .arg(progressInfo.localPath) + ')'
                  : downloaded
-                 ? qsTr(" (downloaded to %1)", "%1 is a local file name")
-                   .arg(progressInfo.localPath)
+                 ? " (" + qsTr("downloaded to %1", "%1 is a local file name")
+                          .arg(progressInfo.localPath) + ')'
                  : "")
         textFormat: TextEdit.PlainText
         wrapMode: Text.Wrap;
 
-        MouseArea {
+        TimelineMouseArea {
             anchors.fill: parent
             acceptedButtons: Qt.NoButton
             hoverEnabled: true
-            cursorShape: Qt.IBeamCursor
 
             onContainsMouseChanged:
                 controller.showStatusMessage(containsMouse
                                              ? room.fileSource(eventId) : "")
+        }
+
+        TimelineMouseArea {
+            anchors.fill: parent
+            acceptedButtons: Qt.RightButton
+            cursorShape: Qt.IBeamCursor
+
+            onClicked: controller.showMenu(index, textFieldImpl.hoveredLink,
+                showingDetails)
         }
     }
     ProgressBar {
